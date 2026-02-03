@@ -225,7 +225,9 @@ async def upload_pdf(file: UploadFile = File(...)):
         # if os.path.exists(pdf_path): os.remove(pdf_path)
         pass
 if __name__ == "__main__":
-    # Use Railway's PORT or default to 8000 for local testing
-    port = int(os.getenv("PORT", 8000)) 
-    uvicorn.run(app, host="0.0.0.0", port=port)
-# ---------------- RUN APP ----------------
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=port
+    )
