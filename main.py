@@ -298,7 +298,7 @@ async def upload_pdf(file: UploadFile = File(...)):
             "details": analyze_text(combined_text)
         })
 
-    @app.get("/debug/system")
+@app.get("/debug/system")
 def debug_system():
     import shutil
     return {
