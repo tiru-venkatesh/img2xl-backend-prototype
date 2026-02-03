@@ -15,12 +15,7 @@ try:
     OCR_AVAILABLE = True
 except Exception:
     OCR_AVAILABLE = False
-
-# Optional Tesseract path (Windows)
-TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-if OCR_AVAILABLE and os.path.exists(TESSERACT_PATH):
-    pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
-
+    
 # ---------------- APP ----------------
 app = FastAPI()
 app.add_middleware(
@@ -302,6 +297,16 @@ async def upload_pdf(file: UploadFile = File(...)):
             "combined_text": combined_text,
             "details": analyze_text(combined_text)
         })
+
+    @app.get("/debug/system")
+def debug_system():
+    import shutil
+    return {
+        "OCR_AVAILABLE": OCR_AVAILABLE,
+        "tesseract": shutil.which("tesseract"),
+        "pdftoppm": shutil.which("pdftoppm"),
+    }
+
 
     summary = summarize_analysis(analysis)
     human_summary = generate_paragraph_summary(summary)
