@@ -2,7 +2,6 @@ import os
 import re
 import shutil
 import uuid
-from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -256,10 +255,10 @@ def assess_document_quality(summary, analysis):
     }
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
-@app.get("/", response_class=HTMLResponse)
-async def serve_frontend():
-    with open("static/index.html", "r", encoding="utf-8") as f:
-        return f.read()
+@app.get("/")
+def root():
+    return {"status": "ok", "service": "img2xl-backend"}
+
 
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
