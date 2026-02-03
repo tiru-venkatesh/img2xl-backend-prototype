@@ -1,22 +1,24 @@
-# Use a lightweight Python image
+# Use Python 3.11 slim as the base
 FROM python:3.11-slim
 
-# Install system dependencies for OCR and PDF conversion
+# Install system-level dependencies for OCR and PDF conversion
 RUN apt-get update && apt-get install -y \
     tesseract-ocr \
     poppler-utils \
-    libtesseract-dev \
-    && apt-get clean
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install Python dependencies
+# Install Python libraries
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy the rest of your code
 COPY . .
 
-# Use the shell form to allow environment variable expansion for $PORT
-# Render's default port is 10000, but it provides the $PORT variable automatically
+# Create the uploads directory
+RUN mkdir -p uploads/pdfs
+
+# Run using the shell form to ensure $PORT is expanded correctly
 CMD uvicorn main:app --host 0.0.0.0 --port $PORT
