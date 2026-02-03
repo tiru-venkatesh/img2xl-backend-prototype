@@ -1,16 +1,22 @@
+# Use a lightweight Python image
 FROM python:3.11-slim
 
-# Install system dependencies (THIS fixes your OCR issue)
+# Install system dependencies for OCR and PDF conversion
 RUN apt-get update && apt-get install -y \
     tesseract-ocr \
     poppler-utils \
-    libgl1 \
-    && rm -rf /var/lib/apt/lists/*
+    libtesseract-dev \
+    && apt-get clean
 
 WORKDIR /app
 
-COPY . /app
-
+# Install Python dependencies
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Copy application code
+COPY . .
+
+# Use the shell form to allow environment variable expansion for $PORT
+# Render's default port is 10000, but it provides the $PORT variable automatically
+CMD uvicorn main:app --host 0.0.0.0 --port $PORT
