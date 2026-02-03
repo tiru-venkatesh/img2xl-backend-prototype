@@ -1,7 +1,9 @@
+
 import os
 import re
 import shutil
 import uuid
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,7 +16,12 @@ try:
     OCR_AVAILABLE = True
 except Exception:
     OCR_AVAILABLE = False
-    
+
+# Optional Tesseract path (Windows)
+TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+if OCR_AVAILABLE and os.path.exists(TESSERACT_PATH):
+    pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
+
 # ---------------- APP ----------------
 app = FastAPI()
 app.add_middleware(
@@ -255,10 +262,10 @@ def assess_document_quality(summary, analysis):
     }
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
-@app.get("/")
-def root():
-    return {"status": "ok", "service": "img2xl-backend"}
-
+@app.get("/", response_class=HTMLResponse)
+async def serve_frontend():
+    with open("static/index.html", "r", encoding="utf-8") as f:
+        return f.read()
 
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
@@ -297,16 +304,6 @@ async def upload_pdf(file: UploadFile = File(...)):
             "details": analyze_text(combined_text)
         })
 
-@app.get("/debug/system")
-def debug_system():
-    import shutil
-    return {
-        "OCR_AVAILABLE": OCR_AVAILABLE,
-        "tesseract": shutil.which("tesseract"),
-        "pdftoppm": shutil.which("pdftoppm"),
-    }
-
-
     summary = summarize_analysis(analysis)
     human_summary = generate_paragraph_summary(summary)
     document_type_info = detect_document_type(summary, analysis)
@@ -324,5 +321,6 @@ def debug_system():
     "human_summary": human_summary,
     "analysis": analysis
 }
+
 
 
