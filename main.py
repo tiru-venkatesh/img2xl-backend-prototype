@@ -1,4 +1,4 @@
-
+IS_PRODUCTION = os.environ.get("RAILWAY_ENVIRONMENT") is not None
 import os
 import re
 import shutil
@@ -10,12 +10,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from pypdf import PdfReader
 
 # ---------------- OCR SAFE IMPORT ----------------
-try:
-    import pytesseract
-    from pdf2image import convert_from_path
-    OCR_AVAILABLE = True
-except Exception:
-    OCR_AVAILABLE = False
+OCR_AVAILABLE = False
+
+if not IS_PRODUCTION:
+    try:
+        import pytesseract
+        from pdf2image import convert_from_path
+        OCR_AVAILABLE = True
+    except Exception:
+        OCR_AVAILABLE = False
+
 
 # Optional Tesseract path (Windows)
 TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
