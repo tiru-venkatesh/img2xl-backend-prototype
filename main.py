@@ -1,49 +1,45 @@
-import os   # MUST be first, no exceptions
-
-IS_PRODUCTION = os.environ.get("RAILWAY_ENVIRONMENT") is not None
-
+import os
 import re
 import shutil
 import uuid
-from fastapi import FastAPI, UploadFile, File
+import pytesseract
+from typing import List
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pypdf import PdfReader
+from pdf2image import convert_from_path
 
-# ---------------- OCR SAFE IMPORT ----------------
-OCR_AVAILABLE = False
+# ---------------- CONFIGURATION ----------------
+# Set to True in production to skip local Tesseract paths
+IS_PRODUCTION = os.getenv("IS_PRODUCTION", "false").lower() == "true"
 
-if not IS_PRODUCTION:
-    try:
-        import pytesseract
-        from pdf2image import convert_from_path
-        OCR_AVAILABLE = True
-    except Exception:
-        OCR_AVAILABLE = False
-
-# Optional Tesseract path (Windows)
+# Optional Tesseract path (Windows specific)
 TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-if OCR_AVAILABLE and os.path.exists(TESSERACT_PATH):
+if not IS_PRODUCTION and os.path.exists(TESSERACT_PATH):
     pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
 
-# ---------------- APP ----------------
-app = FastAPI()
+BASE_DIR = "uploads"
+PDF_DIR = os.path.join(BASE_DIR, "pdfs")
+os.makedirs(PDF_DIR, exist_ok=True)
+os.makedirs("static", exist_ok=True)
+
+# ---------------- APP SETUP ----------------
+app = FastAPI(title="Img2XL Backend Prototype")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # allow all for development
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ---------------- LOGIC ENGINES ----------------
 
-BASE_DIR = "uploads"
-PDF_DIR = os.path.join(BASE_DIR, "pdfs")
-os.makedirs(PDF_DIR, exist_ok=True)
-
-# ---------------- PAGE-LEVEL EXTRACTION ----------------
 def analyze_text(text: str):
+    """Extracts specific patterns like IDs, IPs, and dates using RegEx."""
     return {
         "application_numbers": re.findall(r"\b\d{10,}\b", text),
         "ip_addresses": re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text),
@@ -51,8 +47,8 @@ def analyze_text(text: str):
         "times": re.findall(r"\b\d{2}:\d{2}(?::\d{2})?\b", text)
     }
 
-# ---------------- SUMMARY ENGINE ----------------
-def summarize_analysis(analysis):
+def summarize_analysis(analysis: List[dict]):
+    """Aggregates page-level data into a document-wide summary."""
     summary = {
         "pages_scanned": len(analysis),
         "text_layer_pages": [],
@@ -67,231 +63,132 @@ def summarize_analysis(analysis):
     for page in analysis:
         if page["text_layer_present"]:
             summary["text_layer_pages"].append(page["page"])
-
         if page["ocr_status"] == "success":
             summary["ocr_success_pages"].append(page["page"])
 
         details = page["details"]
-
         summary["unique_application_like_numbers"].update(details.get("application_numbers", []))
         summary["unique_dates"].update(details.get("dates", []))
         summary["unique_times"].update(details.get("times", []))
         summary["unique_ip_addresses"].update(details.get("ip_addresses", []))
 
+        # Capture noise/headings (all caps words/phrases)
         uppercase = re.findall(r"\b[A-Z][A-Z\s]{4,}\b", page["combined_text"])
-        summary["unique_uppercase_phrases"].update(uppercase)
+        summary["unique_uppercase_phrases"].update([p.strip() for p in uppercase if p.strip()])
 
-    # Convert sets → sorted lists
-    for key in summary:
-        if isinstance(summary[key], set):
-            summary[key] = sorted(summary[key])
+    # Convert sets to sorted lists for JSON serialization
+    for key, value in summary.items():
+        if isinstance(value, set):
+            summary[key] = sorted(list(value))
 
     return summary
 
-# ---------------- HUMAN-READABLE SUMMARY ----------------
 def generate_paragraph_summary(summary):
-    lines = []
-
-    lines.append(
-        f"The document contains {summary['pages_scanned']} page(s). "
-        f"Text content was detected on pages {summary['text_layer_pages']}."
-    )
-
-    if summary["ocr_success_pages"]:
-        lines.append(
-            f"Optical character recognition (OCR) successfully processed "
-            f"pages {summary['ocr_success_pages']}."
-        )
-
+    """Converts the summary dictionary into a natural language paragraph."""
+    lines = [f"The document contains {summary['pages_scanned']} page(s)."]
+    
+    if summary["text_layer_pages"]:
+        lines.append(f"Text layer found on pages: {summary['text_layer_pages']}.")
+    
     if summary["unique_application_like_numbers"]:
-        lines.append(
-            f"The document includes {len(summary['unique_application_like_numbers'])} "
-            f"long numeric identifier(s), suggesting reference or ID-like values."
-        )
+        lines.append(f"Detected {len(summary['unique_application_like_numbers'])} reference IDs.")
 
     if summary["unique_dates"]:
-        lines.append(
-            f"Date values such as {', '.join(summary['unique_dates'][:3])} were detected."
-        )
-
-    if summary["unique_times"]:
-        lines.append(
-            f"Time values such as {', '.join(summary['unique_times'][:3])} appear in the document."
-        )
-
-    if summary["unique_ip_addresses"]:
-        lines.append(
-            f"One or more IP address values were detected, indicating system-generated metadata."
-        )
+        lines.append(f"Key dates found: {', '.join(summary['unique_dates'][:3])}.")
 
     if summary["unique_uppercase_phrases"]:
-        sample = summary["unique_uppercase_phrases"][:4]
-        lines.append(
-            f"Prominent uppercase text blocks were identified, including "
-            f"{', '.join(sample)}, which may represent headings, organizations, or names."
-        )
+        sample = summary["unique_uppercase_phrases"][:3]
+        lines.append(f"Prominent headers include: {', '.join(sample)}.")
 
     return " ".join(lines)
 
-# ---------------- API ----------------
 def detect_document_type(summary, analysis):
-    scores = {
-        "application_form": 0,
-        "invoice_or_payment": 0,
-        "government_notice": 0,
-        "identity_document": 0,
-        "educational_record": 0
-    }
-
+    """Heuristic-based classification of the document."""
+    scores = {"application_form": 0, "invoice_or_payment": 0, "government_notice": 0, "identity_document": 0, "educational_record": 0}
     reasons = {k: [] for k in scores}
 
-    # ---- Application form signals ----
+    # Application signals
     if summary["unique_application_like_numbers"]:
         scores["application_form"] += 2
-        reasons["application_form"].append("Contains long numeric identifiers")
+        reasons["application_form"].append("Long numeric IDs found")
 
-    for phrase in summary["unique_uppercase_phrases"]:
-        if "APPLICATION" in phrase or "CONFIRMATION" in phrase:
-            scores["application_form"] += 2
-            reasons["application_form"].append("Contains application-related headings")
+    # Keyword signals
+    full_text = " ".join([p["combined_text"] for p in analysis]).lower()
+    
+    keywords = {
+        "invoice_or_payment": ["amount", "payment", "invoice", "total due", "tax invoice"],
+        "educational_record": ["marks", "examination", "semester", "grade", "transcript"],
+        "identity_document": ["aadhaar", "passport", "identity", "dob", "permanent account number"],
+        "government_notice": ["government", "ministry", "official use", "department"]
+    }
 
-    # ---- Invoice / payment signals ----
-    for page in analysis:
-        if "Amount" in page["combined_text"] or "Payment" in page["combined_text"]:
-            scores["invoice_or_payment"] += 2
-            reasons["invoice_or_payment"].append("Payment-related keywords found")
+    for doc_type, words in keywords.items():
+        for word in words:
+            if word in full_text:
+                scores[doc_type] += 1
+                reasons[doc_type].append(f"Keyword '{word}' found")
 
-    # ---- Government notice signals ----
-    for phrase in summary["unique_uppercase_phrases"]:
-        if "GOVERNMENT" in phrase or "MINISTRY" in phrase:
-            scores["government_notice"] += 2
-            reasons["government_notice"].append("Government-related entities found")
-
-    # ---- Educational record signals ----
-    for page in analysis:
-        if "Marks" in page["combined_text"] or "Examination" in page["combined_text"]:
-            scores["educational_record"] += 1
-            reasons["educational_record"].append("Education-related terms found")
-
-    # ---- Identity document signals ----
-    for page in analysis:
-        if "Aadhaar" in page["combined_text"] or "Passport" in page["combined_text"]:
-            scores["identity_document"] += 2
-            reasons["identity_document"].append("Identity-related keywords found")
-
-    # ---- Pick best ----
     best_type = max(scores, key=scores.get)
-    best_score = scores[best_type]
-
-    if best_score == 0:
-        return {
-            "document_type": "unknown",
-            "confidence": 0.0,
-            "reasoning": ["No strong signals detected"]
-        }
-
-    confidence = min(1.0, best_score / 5)
+    if scores[best_type] == 0:
+        return {"document_type": "unknown", "confidence": 0.0, "reasoning": ["No signals detected"]}
 
     return {
         "document_type": best_type,
-        "confidence": round(confidence, 2),
-        "reasoning": reasons[best_type]
+        "confidence": round(min(1.0, scores[best_type] / 5), 2),
+        "reasoning": list(set(reasons[best_type]))
     }
+
 def assess_document_quality(summary, analysis):
+    """Calculates a confidence score based on OCR success and text noise."""
     reasons = []
-
     total_pages = summary["pages_scanned"]
-    ocr_pages = len(summary["ocr_success_pages"])
-    text_pages = len(summary["text_layer_pages"])
-
-    # ---------- OCR QUALITY ----------
-    ocr_ratio = ocr_pages / total_pages if total_pages else 0
-    if ocr_ratio > 0.8:
-        ocr_quality = "high"
-        reasons.append("OCR succeeded on most pages")
-    elif ocr_ratio > 0.4:
-        ocr_quality = "medium"
-        reasons.append("OCR partially succeeded")
-    else:
-        ocr_quality = "low"
-        reasons.append("OCR failed on many pages")
-
-    # ---------- TEXT NOISE ----------
-    uppercase_count = len(summary["unique_uppercase_phrases"])
-    if uppercase_count > 40:
-        text_noise = "high"
-        reasons.append("High amount of OCR noise detected")
-    elif uppercase_count > 15:
-        text_noise = "medium"
-        reasons.append("Moderate OCR noise detected")
-    else:
-        text_noise = "low"
-        reasons.append("Low OCR noise")
-
-    # ---------- NUMERIC DENSITY ----------
-    numeric_count = len(summary["unique_application_like_numbers"]) + len(summary["unique_dates"])
-    if numeric_count > 6:
-        numeric_density = "high"
-        reasons.append("Document contains many structured numeric values")
-    elif numeric_count > 2:
-        numeric_density = "medium"
-        reasons.append("Some structured numeric values detected")
-    else:
-        numeric_density = "low"
-        reasons.append("Few structured numeric values detected")
-
-    # ---------- OVERALL CONFIDENCE ----------
-    score = 0
-    score += 0.4 if ocr_quality == "high" else 0.25 if ocr_quality == "medium" else 0.1
-    score += 0.3 if numeric_density == "high" else 0.2 if numeric_density == "medium" else 0.1
-    score += 0.2 if text_noise == "low" else 0.1
-    score += 0.1 if text_pages == total_pages else 0.05
-
-    score = round(min(score, 1.0), 2)
-
-    # ---------- DECISION ----------
-    if score >= 0.75:
-        action = "auto_process"
-    elif score >= 0.5:
-        action = "manual_review_recommended"
-    else:
-        action = "manual_review_required"
-
+    ocr_ratio = len(summary["ocr_success_pages"]) / total_pages if total_pages else 0
+    
+    # Simple Scoring
+    score = 0.5
+    if ocr_ratio > 0.8: score += 0.3; reasons.append("High OCR success rate")
+    if len(summary["unique_uppercase_phrases"]) > 30: score -= 0.2; reasons.append("High text noise detected")
+    
+    action = "auto_process" if score >= 0.75 else "manual_review_recommended" if score >= 0.5 else "manual_review_required"
+    
     return {
-        "ocr_quality": ocr_quality,
-        "text_noise": text_noise,
-        "numeric_density": numeric_density,
-        "overall_confidence": score,
+        "overall_confidence": round(score, 2),
         "recommended_action": action,
         "reasoning": reasons
     }
 
+# ---------------- ROUTES ----------------
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
-    with open("static/index.html", "r", encoding="utf-8") as f:
+    index_path = os.path.join("static", "index.html")
+    if not os.path.exists(index_path):
+        return "<html><body><h1>Backend is Running</h1><p>Please create static/index.html to view the UI.</p></body></html>"
+    with open(index_path, "r", encoding="utf-8") as f:
         return f.read()
 
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
     if file.content_type != "application/pdf":
-        return {"error": "Only PDF files are allowed"}
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
 
     doc_id = str(uuid.uuid4())
     pdf_path = os.path.join(PDF_DIR, f"{doc_id}.pdf")
 
-    with open(pdf_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    try:
+        with open(pdf_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
-    reader = PdfReader(pdf_path)
-    analysis = []
+        reader = PdfReader(pdf_path)
+        analysis = []
 
-    for i, page in enumerate(reader.pages):
-        text_layer = page.extract_text() or ""
-        ocr_text = ""
-        ocr_status = "skipped"
+        for i, page in enumerate(reader.pages):
+            text_layer = page.extract_text() or ""
+            ocr_text, ocr_status = "", "skipped"
 
-        if OCR_AVAILABLE:
+            # Attempt OCR
             try:
                 images = convert_from_path(pdf_path, first_page=i+1, last_page=i+1)
                 ocr_text = pytesseract.image_to_string(images[0])
@@ -299,33 +196,35 @@ async def upload_pdf(file: UploadFile = File(...)):
             except Exception:
                 ocr_status = "failed"
 
-        combined_text = (text_layer + "\n" + ocr_text).strip()
+            combined_text = (text_layer + "\n" + ocr_text).strip()
 
-        analysis.append({
-            "page": i + 1,
-            "text_layer_present": bool(text_layer.strip()),
-            "ocr_status": ocr_status,
-            "combined_text": combined_text,
-            "details": analyze_text(combined_text)
-        })
+            analysis.append({
+                "page": i + 1,
+                "text_layer_present": bool(text_layer.strip()),
+                "ocr_status": ocr_status,
+                "combined_text": combined_text,
+                "details": analyze_text(combined_text)
+            })
 
-    summary = summarize_analysis(analysis)
-    human_summary = generate_paragraph_summary(summary)
-    document_type_info = detect_document_type(summary, analysis)
-    quality = assess_document_quality(summary, analysis)
-
-
-    return {
-    "document_id": doc_id,
-    "filename": file.filename,
-    "total_pages": len(reader.pages),
-    "ocr_available": OCR_AVAILABLE,
-    "document_type": document_type_info,
-    "quality": quality,
-    "summary": summary,
-    "human_summary": human_summary,
-    "analysis": analysis
-}
-
-
-
+        summary = summarize_analysis(analysis)
+        
+        return {
+            "document_id": doc_id,
+            "filename": file.filename,
+            "total_pages": len(reader.pages),
+            "document_type": detect_document_type(summary, analysis),
+            "quality": assess_document_quality(summary, analysis),
+            "summary": summary,
+            "human_summary": generate_paragraph_summary(summary),
+            "analysis": analysis
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Cleanup if you don't want to store files permanently
+        # if os.path.exists(pdf_path): os.remove(pdf_path)
+        pass
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+# ---------------- RUN APP ----------------
