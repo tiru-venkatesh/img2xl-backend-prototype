@@ -1,11 +1,13 @@
+import os   # MUST be first, no exceptions
+
 IS_PRODUCTION = os.environ.get("RAILWAY_ENVIRONMENT") is not None
-import os
+
 import re
 import shutil
 import uuid
+from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pypdf import PdfReader
 
@@ -19,7 +21,6 @@ if not IS_PRODUCTION:
         OCR_AVAILABLE = True
     except Exception:
         OCR_AVAILABLE = False
-
 
 # Optional Tesseract path (Windows)
 TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
