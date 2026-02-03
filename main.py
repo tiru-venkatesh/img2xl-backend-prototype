@@ -11,7 +11,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pypdf import PdfReader
 from pdf2image import convert_from_path
-
 # ---------------- CONFIGURATION ----------------
 # Set to True in production to skip local Tesseract paths
 IS_PRODUCTION = os.getenv("IS_PRODUCTION", "false").lower() == "true"
