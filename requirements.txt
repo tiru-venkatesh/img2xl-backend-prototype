@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+python-multipart
+pypdf
+pytesseract; platform_system=="Windows"
+pdf2image; platform_system=="Windows"
